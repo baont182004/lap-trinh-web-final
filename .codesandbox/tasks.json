@@ -3,23 +3,35 @@
   "setupTasks": [
     {
       "name": "Install Dependencies",
-      "command": "yarn install"
+      "command": "cd backend && npm i"
+    },
+    {
+      "name": "Install Frontend",
+      "command": "cd frontend && npm i"
     }
   ],
 
   // These tasks can be run from CodeSandbox. Running one will open a log in the app.
   "tasks": {
     "start": {
-      "name": "start",
-      "command": "yarn start",
+      "name": "start backend",
+      "command": "cd backend && npm run dev",
       "runAtStart": true,
       "preview": {
         "port": 8081
       }
     },
+    "frontend": {
+      "name": "start frontend",
+      "command": "cd frontend && npm run dev",
+      "runAtStart": true,
+      "preview": {
+        "port": 3001
+      }
+    },
     "install": {
-      "name": "install dependencies",
-      "command": "yarn install"
+      "name": "install dependencies (root)",
+      "command": "npm install"
     }
   }
 }
