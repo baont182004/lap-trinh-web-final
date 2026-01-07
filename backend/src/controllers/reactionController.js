@@ -1,8 +1,9 @@
 import mongoose from "mongoose";
 import Photo from "../models/Photo.js";
 import Reaction from "../models/Reaction.js";
-
-const isValidObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
+import asyncHandler from "../middlewares/asyncHandler.js";
+import { badRequest, notFound, ok, unauthorized } from "../utils/http.js";
+import { isValidObjectId } from "../utils/validators.js";
 
 function normalizeValue(value) {
     const parsed = Number(value);
@@ -73,177 +74,167 @@ function logReactionFlow({ targetType, targetId, userId, prevValue, nextValue, i
     });
 }
 
-export async function reactToPhoto(req, res) {
-    try {
-        const userId = req.user?._id;
-        const photoId = req.params.photoId;
-        const value = normalizeValue(req.body?.value);
+export const reactToPhoto = asyncHandler(async (req, res) => {
+    const userId = req.user?._id;
+    const photoId = req.params.photoId;
+    const value = normalizeValue(req.body?.value);
 
-        if (!userId) {
-            return res.status(401).json({ error: "Unauthorized" });
-        }
-        if (!isValidObjectId(photoId)) {
-            return res.status(400).json({ error: "Invalid photo id" });
-        }
-        if (value === null) {
-            return res.status(400).json({ error: "Invalid value" });
-        }
+    if (!userId) {
+        return unauthorized(res, { error: "Unauthorized" });
+    }
+    if (!isValidObjectId(photoId)) {
+        return badRequest(res, { error: "Invalid photo id" });
+    }
+    if (value === null) {
+        return badRequest(res, { error: "Invalid value" });
+    }
 
-        const photo = await Photo.findById(photoId).lean();
-        if (!photo) {
-            return res.status(404).json({ error: "Photo not found" });
-        }
+    const photo = await Photo.findById(photoId).lean();
+    if (!photo) {
+        return notFound(res, { error: "Photo not found" });
+    }
 
-        const existing = await Reaction.findOne({
+    const existing = await Reaction.findOne({
+        user: userId,
+        targetType: "Photo",
+        targetId: photoId,
+    }).lean();
+
+    const prevValue = existing?.value || 0;
+    const nextValue = computeNextValue(prevValue, value);
+
+    if (nextValue === 0 && existing) {
+        await Reaction.deleteOne({ _id: existing._id });
+    } else if (nextValue !== 0 && existing) {
+        await Reaction.updateOne({ _id: existing._id }, { value: nextValue });
+    } else if (nextValue !== 0 && !existing) {
+        await Reaction.create({
             user: userId,
             targetType: "Photo",
             targetId: photoId,
-        }).lean();
-
-        const prevValue = existing?.value || 0;
-        const nextValue = computeNextValue(prevValue, value);
-
-        if (nextValue === 0 && existing) {
-            await Reaction.deleteOne({ _id: existing._id });
-        } else if (nextValue !== 0 && existing) {
-            await Reaction.updateOne({ _id: existing._id }, { value: nextValue });
-        } else if (nextValue !== 0 && !existing) {
-            await Reaction.create({
-                user: userId,
-                targetType: "Photo",
-                targetId: photoId,
-                value: nextValue,
-            });
-        }
-
-        const inc = incForTransition(prevValue, nextValue);
-        const updated =
-            inc.likeCount !== 0 || inc.dislikeCount !== 0
-                ? await Photo.findByIdAndUpdate(
-                      photoId,
-                      { $inc: inc },
-                      { new: true, projection: { likeCount: 1, dislikeCount: 1 } }
-                  ).lean()
-                : photo;
-
-        const counts = await clampPhotoCounts(photoId, {
-            likeCount: updated?.likeCount ?? photo?.likeCount ?? 0,
-            dislikeCount: updated?.dislikeCount ?? photo?.dislikeCount ?? 0,
+            value: nextValue,
         });
-
-        logReactionFlow({
-            targetType: "Photo",
-            targetId: photoId,
-            userId,
-            prevValue,
-            nextValue,
-            inc,
-        });
-
-        return res.status(200).json({
-            myReaction: nextValue,
-            likeCount: counts.likeCount,
-            dislikeCount: counts.dislikeCount,
-        });
-    } catch (error) {
-        console.error("reactToPhoto error:", error);
-        return res.status(500).json({ error: error.message });
     }
-}
 
-export async function reactToComment(req, res) {
-    try {
-        const userId = req.user?._id;
-        const commentId = req.params.commentId;
-        const value = normalizeValue(req.body?.value);
+    const inc = incForTransition(prevValue, nextValue);
+    const updated =
+        inc.likeCount !== 0 || inc.dislikeCount !== 0
+            ? await Photo.findByIdAndUpdate(
+                  photoId,
+                  { $inc: inc },
+                  { new: true, projection: { likeCount: 1, dislikeCount: 1 } }
+              ).lean()
+            : photo;
 
-        if (!userId) {
-            return res.status(401).json({ error: "Unauthorized" });
-        }
-        if (!isValidObjectId(commentId)) {
-            return res.status(400).json({ error: "Invalid comment id" });
-        }
-        if (value === null) {
-            return res.status(400).json({ error: "Invalid value" });
-        }
+    const counts = await clampPhotoCounts(photoId, {
+        likeCount: updated?.likeCount ?? photo?.likeCount ?? 0,
+        dislikeCount: updated?.dislikeCount ?? photo?.dislikeCount ?? 0,
+    });
 
-        const photo = await Photo.findOne(
-            { "comments._id": commentId },
-            { _id: 1 }
-        ).lean();
+    logReactionFlow({
+        targetType: "Photo",
+        targetId: photoId,
+        userId,
+        prevValue,
+        nextValue,
+        inc,
+    });
 
-        if (!photo) {
-            return res.status(404).json({ error: "Comment not found" });
-        }
+    return ok(res, {
+        myReaction: nextValue,
+        likeCount: counts.likeCount,
+        dislikeCount: counts.dislikeCount,
+    });
+});
 
-        const existing = await Reaction.findOne({
+export const reactToComment = asyncHandler(async (req, res) => {
+    const userId = req.user?._id;
+    const commentId = req.params.commentId;
+    const value = normalizeValue(req.body?.value);
+
+    if (!userId) {
+        return unauthorized(res, { error: "Unauthorized" });
+    }
+    if (!isValidObjectId(commentId)) {
+        return badRequest(res, { error: "Invalid comment id" });
+    }
+    if (value === null) {
+        return badRequest(res, { error: "Invalid value" });
+    }
+
+    const photo = await Photo.findOne(
+        { "comments._id": commentId },
+        { _id: 1 }
+    ).lean();
+
+    if (!photo) {
+        return notFound(res, { error: "Comment not found" });
+    }
+
+    const existing = await Reaction.findOne({
+        user: userId,
+        targetType: "Comment",
+        targetId: commentId,
+    }).lean();
+
+    const prevValue = existing?.value || 0;
+    const nextValue = computeNextValue(prevValue, value);
+
+    if (nextValue === 0 && existing) {
+        await Reaction.deleteOne({ _id: existing._id });
+    } else if (nextValue !== 0 && existing) {
+        await Reaction.updateOne({ _id: existing._id }, { value: nextValue });
+    } else if (nextValue !== 0 && !existing) {
+        await Reaction.create({
             user: userId,
             targetType: "Comment",
             targetId: commentId,
-        }).lean();
+            value: nextValue,
+        });
+    }
 
-        const prevValue = existing?.value || 0;
-        const nextValue = computeNextValue(prevValue, value);
-
-        if (nextValue === 0 && existing) {
-            await Reaction.deleteOne({ _id: existing._id });
-        } else if (nextValue !== 0 && existing) {
-            await Reaction.updateOne({ _id: existing._id }, { value: nextValue });
-        } else if (nextValue !== 0 && !existing) {
-            await Reaction.create({
-                user: userId,
-                targetType: "Comment",
-                targetId: commentId,
-                value: nextValue,
-            });
-        }
-
-        const inc = incForTransition(prevValue, nextValue);
-        const commentObjectId = new mongoose.Types.ObjectId(commentId);
-        if (inc.likeCount !== 0 || inc.dislikeCount !== 0) {
-            await Photo.updateOne(
-                { _id: photo._id },
-                {
-                    $inc: {
-                        "comments.$[comment].likeCount": inc.likeCount,
-                        "comments.$[comment].dislikeCount": inc.dislikeCount,
-                    },
-                },
-                { arrayFilters: [{ "comment._id": commentObjectId }] }
-            );
-        }
-
-        const updated = await Photo.findOne(
+    const inc = incForTransition(prevValue, nextValue);
+    const commentObjectId = new mongoose.Types.ObjectId(commentId);
+    if (inc.likeCount !== 0 || inc.dislikeCount !== 0) {
+        await Photo.updateOne(
             { _id: photo._id },
-            { comments: { $elemMatch: { _id: commentObjectId } } }
-        ).lean();
-
-        const updatedComment = updated?.comments?.[0];
-        if (!updatedComment) {
-            return res.status(404).json({ error: "Comment not found" });
-        }
-
-        const counts = await clampCommentCounts(photo._id, commentObjectId, {
-            likeCount: updatedComment?.likeCount ?? 0,
-            dislikeCount: updatedComment?.dislikeCount ?? 0,
-        });
-
-        logReactionFlow({
-            targetType: "Comment",
-            targetId: commentId,
-            userId,
-            prevValue,
-            nextValue,
-            inc,
-        });
-
-        return res.status(200).json({
-            myReaction: nextValue,
-            likeCount: counts.likeCount,
-            dislikeCount: counts.dislikeCount,
-        });
-    } catch (error) {
-        console.error("reactToComment error:", error);
-        return res.status(500).json({ error: error.message });
+            {
+                $inc: {
+                    "comments.$[comment].likeCount": inc.likeCount,
+                    "comments.$[comment].dislikeCount": inc.dislikeCount,
+                },
+            },
+            { arrayFilters: [{ "comment._id": commentObjectId }] }
+        );
     }
-}
+
+    const updated = await Photo.findOne(
+        { _id: photo._id },
+        { comments: { $elemMatch: { _id: commentObjectId } } }
+    ).lean();
+
+    const updatedComment = updated?.comments?.[0];
+    if (!updatedComment) {
+        return notFound(res, { error: "Comment not found" });
+    }
+
+    const counts = await clampCommentCounts(photo._id, commentObjectId, {
+        likeCount: updatedComment?.likeCount ?? 0,
+        dislikeCount: updatedComment?.dislikeCount ?? 0,
+    });
+
+    logReactionFlow({
+        targetType: "Comment",
+        targetId: commentId,
+        userId,
+        prevValue,
+        nextValue,
+        inc,
+    });
+
+    return ok(res, {
+        myReaction: nextValue,
+        likeCount: counts.likeCount,
+        dislikeCount: counts.dislikeCount,
+    });
+});

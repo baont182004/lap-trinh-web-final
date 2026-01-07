@@ -2,163 +2,151 @@ import mongoose from 'mongoose';
 import User from '../models/User.js';
 import Photo from '../models/Photo.js';
 import Friendship from '../models/Friendship.js';
+import asyncHandler from '../middlewares/asyncHandler.js';
+import { ok, badRequest, notFound } from '../utils/http.js';
+import { isValidObjectId, safeTrim } from '../utils/validators.js';
 
 const USER_PUBLIC_FIELDS = '_id first_name last_name';
 const USER_DETAIL_FIELDS =
     '_id first_name last_name location description occupation login_name';
 
 // Get /user/list
-export async function getUserList(req, res) {
-    try {
-        const users = await User.find({}, USER_PUBLIC_FIELDS).lean();
-        return res.status(200).json(users);
-    } catch (error) {
-        console.error('Error fetching user list:', error);
-        return res.status(500).json({ error: error.message });
-    }
-}
+export const getUserList = asyncHandler(async (req, res) => {
+    const users = await User.find({}, USER_PUBLIC_FIELDS).lean();
+    return ok(res, users);
+});
 
 //Get /user/:id
-export async function getUserById(req, res) {
-    try {
-        const userId = req.params.id;
-        if (!mongoose.Types.ObjectId.isValid(userId)) {
-            return res.status(400).json({ error: 'Invalid user id' });
-        }
-        const user = await User.findById(userId, USER_DETAIL_FIELDS).lean();
-        if (!user) {
-            return res.status(404).json({ error: 'User not found' });
-        }
-        return res.status(200).json(user);
-    } catch (error) {
-        console.error('Error fetching user by ID:', error);
-        return res.status(500).json({ error: error.message });
+export const getUserById = asyncHandler(async (req, res) => {
+    const userId = req.params.id;
+    if (!isValidObjectId(userId)) {
+        return badRequest(res, { error: 'Invalid user id' });
     }
-}
+    const user = await User.findById(userId, USER_DETAIL_FIELDS).lean();
+    if (!user) {
+        return notFound(res, { error: 'User not found' });
+    }
+    return ok(res, user);
+});
 
 // GET /user/me/stats
-export async function getMyStats(req, res) {
-    try {
-        const userId = req.user?._id;
-        if (!mongoose.Types.ObjectId.isValid(userId)) {
-            return res.status(401).json({ error: 'Unauthorized' });
-        }
-
-        const [photoAgg, friendCount] = await Promise.all([
-            Photo.aggregate([
-                { $match: { user_id: new mongoose.Types.ObjectId(userId) } },
-                {
-                    $group: {
-                        _id: '$user_id',
-                        photoCount: { $sum: 1 },
-                        totalLikes: { $sum: '$likeCount' },
-                        totalDislikes: { $sum: '$dislikeCount' },
-                    },
-                },
-            ]),
-            Friendship.countDocuments({ users: userId }),
-        ]);
-
-        const stats = photoAgg[0] || {};
-        const totalLikes = stats.totalLikes || 0;
-        const totalDislikes = stats.totalDislikes || 0;
-
-        return res.status(200).json({
-            photoCount: stats.photoCount || 0,
-            friendCount: friendCount || 0,
-            totalLikes,
-            totalDislikes,
-            totalReactions: totalLikes + totalDislikes,
-        });
-    } catch (error) {
-        console.error('Error fetching my stats:', error);
-        return res.status(500).json({ error: error.message });
+export const getMyStats = asyncHandler(async (req, res) => {
+    const userId = req.user?._id;
+    if (!isValidObjectId(userId)) {
+        return res.status(401).json({ error: 'Unauthorized' });
     }
-}
+
+    const [photoAgg, friendCount] = await Promise.all([
+        Photo.aggregate([
+            { $match: { user_id: new mongoose.Types.ObjectId(userId) } },
+            {
+                $group: {
+                    _id: '$user_id',
+                    photoCount: { $sum: 1 },
+                    totalLikes: { $sum: '$likeCount' },
+                    totalDislikes: { $sum: '$dislikeCount' },
+                },
+            },
+        ]),
+        Friendship.countDocuments({ users: userId }),
+    ]);
+
+    const stats = photoAgg[0] || {};
+    const totalLikes = stats.totalLikes || 0;
+    const totalDislikes = stats.totalDislikes || 0;
+
+    return ok(res, {
+        photoCount: stats.photoCount || 0,
+        friendCount: friendCount || 0,
+        totalLikes,
+        totalDislikes,
+        totalReactions: totalLikes + totalDislikes,
+    });
+});
 
 // GET /user/search?name=...
-export async function searchUsersByName(req, res) {
-    try {
-        const nameQuery = req.query.name;
-        if (!nameQuery || typeof nameQuery !== 'string' || nameQuery.trim() === '') {
-            return res.status(400).json({ error: 'name query parameter is required' });
-        }
-
-        const regex = new RegExp(nameQuery.trim(), 'i');
-        const users = await User.find(
-            {
-                $or: [
-                    { first_name: { $regex: regex } },
-                    { last_name: { $regex: regex } },
-                ],
-            },
-            USER_PUBLIC_FIELDS
-        ).lean();
-
-        return res.status(200).json(users);
-    } catch (error) {
-        console.error('Error searching users by name:', error);
-        return res.status(500).json({ error: error.message });
+export const searchUsersByName = asyncHandler(async (req, res) => {
+    const nameQuery = req.query.name;
+    if (!nameQuery || typeof nameQuery !== 'string' || nameQuery.trim() === '') {
+        return badRequest(res, { error: 'name query parameter is required' });
     }
-}
+
+    const regex = new RegExp(nameQuery.trim(), 'i');
+    const users = await User.find(
+        {
+            $or: [
+                { first_name: { $regex: regex } },
+                { last_name: { $regex: regex } },
+            ],
+        },
+        USER_PUBLIC_FIELDS
+    ).lean();
+
+    return ok(res, users);
+});
 
 // POST /user
-export async function register(req, res) {
+export const register = asyncHandler(async (req, res) => {
+    const {
+        login_name,
+        password,
+        first_name,
+        last_name,
+        location = "",
+        description = "",
+        occupation = "",
+    } = req.body || {};
+
+    const loginName = safeTrim(login_name);
+    const pass = safeTrim(password);
+    const firstName = safeTrim(first_name);
+    const lastName = safeTrim(last_name);
+
+    // Validate theo spec: login_name unique, password/first/last non-empty
+    if (!loginName) {
+        return badRequest(res, { error: 'login_name is required' });
+    }
+    if (!pass) {
+        return badRequest(res, { error: 'password is required' });
+    }
+    if (!firstName) {
+        return badRequest(res, { error: 'first_name is required' });
+    }
+    if (!lastName) {
+        return badRequest(res, { error: 'last_name is required' });
+    }
+
+    const existed = await User.findOne({ login_name: loginName }).lean();
+    if (existed) {
+        return badRequest(res, { error: 'login_name already exists' });
+    }
+
+    let user;
     try {
-        const {
-            login_name,
-            password,
-            first_name,
-            last_name,
-            location = "",
-            description = "",
-            occupation = "",
-        } = req.body || {};
-
-        // Validate theo spec: login_name unique, password/first/last non-empty
-        if (!login_name || typeof login_name !== 'string' || login_name.trim() === '') {
-            return res.status(400).json({ error: 'login_name is required' });
-        }
-        if (!password || typeof password !== 'string' || password.trim() === '') {
-            return res.status(400).json({ error: 'password is required' });
-        }
-        if (!first_name || typeof first_name !== 'string' || first_name.trim() === '') {
-            return res.status(400).json({ error: 'first_name is required' });
-        }
-        if (!last_name || typeof last_name !== 'string' || last_name.trim() === '') {
-            return res.status(400).json({ error: 'last_name is required' });
-        }
-
-        const existed = await User.findOne({ login_name: login_name.trim() }).lean();
-        if (existed) {
-            return res.status(400).json({ error: 'login_name already exists' });
-        }
-
-        const user = await User.create({
-            login_name: login_name.trim(),
-            password: password.trim(),
-            first_name: first_name.trim(),
-            last_name: last_name.trim(),
+        user = await User.create({
+            login_name: loginName,
+            password: pass,
+            first_name: firstName,
+            last_name: lastName,
             location,
             description,
             occupation,
         });
-
-        return res.status(200).json({
-            _id: user._id,
-            login_name: user.login_name,
-            first_name: user.first_name,
-            last_name: user.last_name,
-            location: user.location,
-            description: user.description,
-            occupation: user.occupation,
-            role: user.role,
-        });
     } catch (error) {
         if (error?.code === 11000) {
-            return res.status(400).json({ error: 'login_name already exists' });
+            return badRequest(res, { error: 'login_name already exists' });
         }
-        console.error('Error register:', error);
-        return res.status(500).json({ error: error.message });
+        throw error;
     }
-}
+
+    return ok(res, {
+        _id: user._id,
+        login_name: user.login_name,
+        first_name: user.first_name,
+        last_name: user.last_name,
+        location: user.location,
+        description: user.description,
+        occupation: user.occupation,
+        role: user.role,
+    });
+});

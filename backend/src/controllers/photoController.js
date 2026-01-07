@@ -4,16 +4,15 @@ import Photo from '../models/Photo.js';
 import Reaction from '../models/Reaction.js';
 import { deleteImageByPublicId, uploadImageBuffer } from '../config/cloudinary.js';
 import { ALLOWED_MIME_TYPES } from '../config/uploads.js';
+import asyncHandler from '../middlewares/asyncHandler.js';
+import { created, ok, badRequest, forbidden, notFound } from '../utils/http.js';
+import { isOwnerOrAdmin } from '../utils/permissions.js';
+import { isValidObjectId } from '../utils/validators.js';
 
 const COMMENT_FIELDS = '_id first_name last_name login_name';
 const FEED_DEFAULT_LIMIT = 12;
 const FEED_MAX_LIMIT = 30;
 const OPTIMIZED_TRANSFORM = 'f_auto,q_auto,w_1080';
-
-const isValidObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
-
-const isOwnerOrAdmin = (resourceUserId, user) =>
-    !!user && (user.role === 'admin' || resourceUserId?.toString() === user._id);
 
 function parseFeedLimit(rawLimit) {
     const parsed = Number.parseInt(rawLimit, 10);
@@ -111,8 +110,8 @@ async function validateImageBuffer(file) {
 }
 
 // GET /photosOfUser/:id
-export async function getPhotosOfUser(req, res) {
-    try {
+export const getPhotosOfUser = asyncHandler(
+    async (req, res) => {
         const photos = await Photo.find({ user_id: req.params.id })
             .sort({ date_time: -1 })
             .populate('comments.user_id', COMMENT_FIELDS)
@@ -120,21 +119,19 @@ export async function getPhotosOfUser(req, res) {
 
         const shaped = await attachReactions(photos, req.user?._id);
 
-        return res.status(200).json(shaped);
-    } catch (err) {
-        console.error('photosOfUser error:', err);
-        return res.status(500).send('Server error');
-    }
-}
+        return ok(res, shaped);
+    },
+    { defaultMessage: 'Server error', responseType: 'text' }
+);
 
 // GET /photos/recent
-export async function getRecentPhotos(req, res) {
-    try {
+export const getRecentPhotos = asyncHandler(
+    async (req, res) => {
         const limit = parseFeedLimit(req.query.limit);
         const rawCursor = req.query.cursor;
         const cursor = parseCursor(rawCursor);
         if (rawCursor && !cursor) {
-            return res.status(400).json({ error: 'Invalid cursor' });
+            return badRequest(res, { error: 'Invalid cursor' });
         }
 
         const query = {};
@@ -164,22 +161,20 @@ export async function getRecentPhotos(req, res) {
                 ? `${new Date(last.date_time).toISOString()}|${last._id}`
                 : null;
 
-        return res.status(200).json({
+        return ok(res, {
             items: shaped,
             nextCursor,
             hasMore,
         });
-    } catch (err) {
-        console.error('getRecentPhotos error:', err);
-        return res.status(500).send('Server error');
-    }
-}
+    },
+    { defaultMessage: 'Server error', responseType: 'text' }
+);
 
 
 
 // POST /commentsOfPhoto/:photo_id
-export async function addComment(req, res) {
-    try {
+export const addComment = asyncHandler(
+    async (req, res) => {
         const { comment } = req.body || {};
         if (!comment || typeof comment !== 'string' || comment.trim() === '') {
             return res.status(400).send('Empty comment');
@@ -201,19 +196,17 @@ export async function addComment(req, res) {
 
         const updated = await fetchPhotoWithComments(req.params.photo_id);
         const shaped = await attachReactions(updated ? [updated] : [], req.user?._id);
-        return res.status(200).json(shaped[0] || null);
-    } catch (err) {
-        console.error('addComment error:', err);
-        return res.status(500).send('Server error');
-    }
-}
+        return ok(res, shaped[0] || null);
+    },
+    { defaultMessage: 'Server error', responseType: 'text' }
+);
 
 // Post /photos/new
-export async function uploadNewPhoto(req, res) {
-    try {
+export const uploadNewPhoto = asyncHandler(
+    async (req, res) => {
         const validation = await validateImageBuffer(req.file);
         if (!validation.ok) {
-            return res.status(400).json({ error: validation.error });
+            return badRequest(res, { error: validation.error });
         }
         const userId = req.user?._id;
         if (!userId) return res.sendStatus(401);
@@ -222,7 +215,7 @@ export async function uploadNewPhoto(req, res) {
         const description =
             typeof rawDescription === 'string' ? rawDescription.trim() : '';
         if (description.length > 200) {
-            return res.status(400).json({ error: 'Description too long' });
+            return badRequest(res, { error: 'Description too long' });
         }
 
         const uploaded = await uploadImageBuffer(req.file.buffer, {
@@ -242,26 +235,24 @@ export async function uploadNewPhoto(req, res) {
             comments: [],
         });
 
-        return res.status(201).json(shapePhoto(photo));
-    } catch (err) {
-        console.error('uploadNewPhoto error:', err);
-        return res.status(500).send('Server error');
-    }
-}
+        return created(res, shapePhoto(photo));
+    },
+    { defaultMessage: 'Server error', responseType: 'text' }
+);
 
 // DELETE /photos/:id
-export async function deletePhoto(req, res) {
-    try {
+export const deletePhoto = asyncHandler(
+    async (req, res) => {
         const photoId = req.params.id;
         if (!isValidObjectId(photoId)) {
-            return res.status(400).json({ error: 'Invalid photo id' });
+            return badRequest(res, { error: 'Invalid photo id' });
         }
 
         const photo = await Photo.findById(photoId);
-        if (!photo) return res.status(404).json({ error: 'Photo not found' });
+        if (!photo) return notFound(res, { error: 'Photo not found' });
 
         if (!isOwnerOrAdmin(photo.user_id, req.user)) {
-            return res.status(403).json({ error: 'Not allowed to delete this photo' });
+            return forbidden(res, { error: 'Not allowed to delete this photo' });
         }
 
         const oldPublicId = photo.publicId;
@@ -271,35 +262,33 @@ export async function deletePhoto(req, res) {
             await deleteImageByPublicId(oldPublicId);
         }
 
-        return res.status(200).json({ success: true });
-    } catch (err) {
-        console.error('deletePhoto error:', err);
-        return res.status(500).send('Server error');
-    }
-}
+        return ok(res, { success: true });
+    },
+    { defaultMessage: 'Server error', responseType: 'text' }
+);
 
 // PUT /photos/:id
-export async function updatePhotoDescription(req, res) {
-    try {
+export const updatePhotoDescription = asyncHandler(
+    async (req, res) => {
         const photoId = req.params.id;
         if (!isValidObjectId(photoId)) {
-            return res.status(400).json({ error: 'Invalid photo id' });
+            return badRequest(res, { error: 'Invalid photo id' });
         }
 
         const rawDescription = req.body?.description;
         if (rawDescription !== undefined && typeof rawDescription !== 'string') {
-            return res.status(400).json({ error: 'Invalid description' });
+            return badRequest(res, { error: 'Invalid description' });
         }
         const description = typeof rawDescription === 'string' ? rawDescription.trim() : '';
         if (description.length > 200) {
-            return res.status(400).json({ error: 'Description too long' });
+            return badRequest(res, { error: 'Description too long' });
         }
 
         const photo = await Photo.findById(photoId);
-        if (!photo) return res.status(404).json({ error: 'Photo not found' });
+        if (!photo) return notFound(res, { error: 'Photo not found' });
 
         if (!req.user?._id || photo.user_id?.toString() !== req.user._id) {
-            return res.status(403).json({ error: 'Not allowed to edit this photo' });
+            return forbidden(res, { error: 'Not allowed to edit this photo' });
         }
 
         photo.description = description;
@@ -307,30 +296,28 @@ export async function updatePhotoDescription(req, res) {
 
         const updated = await fetchPhotoWithComments(photoId);
         const shaped = await attachReactions(updated ? [updated] : [], req.user?._id);
-        return res.status(200).json(shaped[0] || null);
-    } catch (err) {
-        console.error('updatePhotoDescription error:', err);
-        return res.status(500).send('Server error');
-    }
-}
+        return ok(res, shaped[0] || null);
+    },
+    { defaultMessage: 'Server error', responseType: 'text' }
+);
 
 // PUT /photos/:id/image
-export async function replacePhotoImage(req, res) {
-    try {
+export const replacePhotoImage = asyncHandler(
+    async (req, res) => {
         const photoId = req.params.id;
         if (!isValidObjectId(photoId)) {
-            return res.status(400).json({ error: 'Invalid photo id' });
+            return badRequest(res, { error: 'Invalid photo id' });
         }
         const validation = await validateImageBuffer(req.file);
         if (!validation.ok) {
-            return res.status(400).json({ error: validation.error });
+            return badRequest(res, { error: validation.error });
         }
 
         const photo = await Photo.findById(photoId);
-        if (!photo) return res.status(404).json({ error: 'Photo not found' });
+        if (!photo) return notFound(res, { error: 'Photo not found' });
 
         if (!isOwnerOrAdmin(photo.user_id, req.user)) {
-            return res.status(403).json({ error: 'Not allowed to edit this photo' });
+            return forbidden(res, { error: 'Not allowed to edit this photo' });
         }
 
         const oldPublicId = photo.publicId;
@@ -352,34 +339,32 @@ export async function replacePhotoImage(req, res) {
 
         const updated = await fetchPhotoWithComments(photoId);
         const shaped = await attachReactions(updated ? [updated] : [], req.user?._id);
-        return res.status(200).json(shaped[0] || null);
-    } catch (err) {
-        console.error('replacePhotoImage error:', err);
-        return res.status(500).send('Server error');
-    }
-}
+        return ok(res, shaped[0] || null);
+    },
+    { defaultMessage: 'Server error', responseType: 'text' }
+);
 
 // PUT /commentsOfPhoto/:photo_id/:comment_id
-export async function updateComment(req, res) {
-    try {
+export const updateComment = asyncHandler(
+    async (req, res) => {
         const { photo_id: photoId, comment_id: commentId } = req.params;
         if (!isValidObjectId(photoId) || !isValidObjectId(commentId)) {
-            return res.status(400).json({ error: 'Invalid id' });
+            return badRequest(res, { error: 'Invalid id' });
         }
 
         const { comment } = req.body || {};
         if (!comment || typeof comment !== 'string' || comment.trim() === '') {
-            return res.status(400).json({ error: 'Empty comment' });
+            return badRequest(res, { error: 'Empty comment' });
         }
 
         const photo = await Photo.findById(photoId);
-        if (!photo) return res.status(404).json({ error: 'Photo not found' });
+        if (!photo) return notFound(res, { error: 'Photo not found' });
 
         const cmt = photo.comments.id(commentId);
-        if (!cmt) return res.status(404).json({ error: 'Comment not found' });
+        if (!cmt) return notFound(res, { error: 'Comment not found' });
 
         if (!isOwnerOrAdmin(cmt.user_id, req.user)) {
-            return res.status(403).json({ error: 'Not allowed to edit this comment' });
+            return forbidden(res, { error: 'Not allowed to edit this comment' });
         }
 
         cmt.comment = comment.trim();
@@ -387,29 +372,27 @@ export async function updateComment(req, res) {
 
         const updated = await fetchPhotoWithComments(photoId);
         const shaped = await attachReactions(updated ? [updated] : [], req.user?._id);
-        return res.status(200).json(shaped[0] || null);
-    } catch (err) {
-        console.error('updateComment error:', err);
-        return res.status(500).send('Server error');
-    }
-}
+        return ok(res, shaped[0] || null);
+    },
+    { defaultMessage: 'Server error', responseType: 'text' }
+);
 
 // DELETE /commentsOfPhoto/:photo_id/:comment_id
-export async function deleteComment(req, res) {
-    try {
+export const deleteComment = asyncHandler(
+    async (req, res) => {
         const { photo_id: photoId, comment_id: commentId } = req.params;
         if (!isValidObjectId(photoId) || !isValidObjectId(commentId)) {
-            return res.status(400).json({ error: 'Invalid id' });
+            return badRequest(res, { error: 'Invalid id' });
         }
 
         const photo = await Photo.findById(photoId);
-        if (!photo) return res.status(404).json({ error: 'Photo not found' });
+        if (!photo) return notFound(res, { error: 'Photo not found' });
 
         const cmt = photo.comments.id(commentId);
-        if (!cmt) return res.status(404).json({ error: 'Comment not found' });
+        if (!cmt) return notFound(res, { error: 'Comment not found' });
 
         if (!isOwnerOrAdmin(cmt.user_id, req.user)) {
-            return res.status(403).json({ error: 'Not allowed to delete this comment' });
+            return forbidden(res, { error: 'Not allowed to delete this comment' });
         }
 
         cmt.remove();
@@ -417,9 +400,7 @@ export async function deleteComment(req, res) {
 
         const updated = await fetchPhotoWithComments(photoId);
         const shaped = await attachReactions(updated ? [updated] : [], req.user?._id);
-        return res.status(200).json(shaped[0] || null);
-    } catch (err) {
-        console.error('deleteComment error:', err);
-        return res.status(500).send('Server error');
-    }
-}
+        return ok(res, shaped[0] || null);
+    },
+    { defaultMessage: 'Server error', responseType: 'text' }
+);

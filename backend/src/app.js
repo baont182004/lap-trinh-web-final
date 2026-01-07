@@ -8,6 +8,7 @@ import userRoutes from './routes/userRoutes.js';
 import photoRoutes from './routes/photoRoutes.js';
 import friendRoutes from './routes/friendRoutes.js';
 import reactionRoutes from './routes/reactionRoutes.js';
+import errorHandler from './middlewares/errorHandler.js';
 
 const app = express();
 app.use(cors());
@@ -20,14 +21,6 @@ app.use('/', photoRoutes);
 app.use('/api/friends', friendRoutes);
 app.use('/api', reactionRoutes);
 
-app.use((err, req, res, next) => {
-    if (err?.name === 'MulterError') {
-        return res.status(400).json({ error: err.message });
-    }
-    if (err?.message?.includes('image files')) {
-        return res.status(400).json({ error: err.message });
-    }
-    return next(err);
-});
+app.use(errorHandler);
 
 export default app;
