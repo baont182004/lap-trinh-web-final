@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../config/api";
 import { API_PATHS } from "../config/apiPaths";
 
@@ -7,6 +7,7 @@ export default function useUserSummaries(searchTerm = "") {
     const [allPhotos, setAllPhotos] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState("");
+    const photosByUserRef = useRef(new Map());
 
     useEffect(() => {
         let alive = true;
@@ -25,13 +26,27 @@ export default function useUserSummaries(searchTerm = "") {
                 setUsers(data);
 
                 if (data && data.length > 0) {
-                    const arrays = await Promise.all(
-                        data.map((u) =>
-                            api.get(API_PATHS.photos.ofUser(u._id)).catch(() => [])
-                        )
+                    const missing = data.filter(
+                        (u) => !photosByUserRef.current.has(String(u._id))
+                    );
+
+                    if (missing.length > 0) {
+                        const arrays = await Promise.all(
+                            missing.map((u) =>
+                                api.get(API_PATHS.photos.ofUser(u._id)).catch(() => [])
+                            )
+                        );
+                        if (!alive) return;
+                        missing.forEach((u, idx) => {
+                            photosByUserRef.current.set(String(u._id), arrays[idx]);
+                        });
+                    }
+
+                    const combined = data.flatMap(
+                        (u) => photosByUserRef.current.get(String(u._id)) || []
                     );
                     if (!alive) return;
-                    setAllPhotos(arrays.flat());
+                    setAllPhotos(combined);
                 } else {
                     setAllPhotos([]);
                 }
