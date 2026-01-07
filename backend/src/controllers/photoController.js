@@ -1,18 +1,23 @@
 import mongoose from 'mongoose';
 import { fileTypeFromBuffer } from 'file-type';
 import Photo from '../models/Photo.js';
-import Reaction from '../models/Reaction.js';
-import { deleteImageByPublicId, uploadImageBuffer } from '../config/cloudinary.js';
+import { deleteImageByPublicId } from '../config/cloudinary.js';
 import { ALLOWED_MIME_TYPES } from '../config/uploads.js';
 import asyncHandler from '../middlewares/asyncHandler.js';
 import { created, ok, badRequest, forbidden, notFound } from '../utils/http.js';
 import { isOwnerOrAdmin } from '../utils/permissions.js';
 import { isValidObjectId } from '../utils/validators.js';
+import { toClient } from '../presenters/photoPresenter.js';
+import {
+    attachReactions,
+    COMMENT_FIELDS,
+    createPhotoFromUpload,
+    fetchPhotoWithComments,
+    replacePhotoImage as replacePhotoImageService,
+} from '../services/photoService.js';
 
-const COMMENT_FIELDS = '_id first_name last_name login_name';
 const FEED_DEFAULT_LIMIT = 12;
 const FEED_MAX_LIMIT = 30;
-const OPTIMIZED_TRANSFORM = 'f_auto,q_auto,w_1080';
 
 function parseFeedLimit(rawLimit) {
     const parsed = Number.parseInt(rawLimit, 10);
@@ -30,70 +35,6 @@ function parseCursor(rawCursor) {
     return { date, id: new mongoose.Types.ObjectId(rawId) };
 }
 
-function buildOptimizedUrl(url) {
-    if (!url) return '';
-    const marker = '/upload/';
-    const idx = url.indexOf(marker);
-    if (idx === -1) return url;
-    const prefix = url.slice(0, idx + marker.length);
-    const suffix = url.slice(idx + marker.length);
-    return `${prefix}${OPTIMIZED_TRANSFORM}/${suffix}`;
-}
-
-function shapePhoto(doc, photoReactions = new Map(), commentReactions = new Map()) {
-    if (!doc) return null;
-    const p = doc.toObject ? doc.toObject() : doc;
-    return {
-        ...p,
-        imageUrlOptimized: p.imageUrl ? buildOptimizedUrl(p.imageUrl) : undefined,
-        likeCount: p.likeCount || 0,
-        dislikeCount: p.dislikeCount || 0,
-        myReaction: photoReactions.get(String(p._id)) || 0,
-        comments: (p.comments || []).map((c) => ({
-            _id: c._id,
-            comment: c.comment,
-            date_time: c.date_time,
-            user: c.user || c.user_id,
-            likeCount: c.likeCount || 0,
-            dislikeCount: c.dislikeCount || 0,
-            myReaction: commentReactions.get(String(c._id)) || 0,
-        })),
-    };
-}
-
-async function attachReactions(photos, userId) {
-    if (!photos || photos.length === 0) return [];
-    if (!userId) return photos.map((p) => shapePhoto(p));
-
-    const photoIds = photos.map((p) => p._id);
-    const commentIds = photos.flatMap((p) =>
-        (p.comments || []).map((c) => c._id)
-    );
-
-    const reactions = await Reaction.find({
-        user: userId,
-        $or: [
-            { targetType: 'Photo', targetId: { $in: photoIds } },
-            { targetType: 'Comment', targetId: { $in: commentIds } },
-        ],
-    }).lean();
-
-    const photoReactions = new Map();
-    const commentReactions = new Map();
-    reactions.forEach((r) => {
-        const key = String(r.targetId);
-        if (r.targetType === 'Photo') photoReactions.set(key, r.value);
-        if (r.targetType === 'Comment') commentReactions.set(key, r.value);
-    });
-
-    return photos.map((p) => shapePhoto(p, photoReactions, commentReactions));
-}
-
-async function fetchPhotoWithComments(photoId) {
-    return Photo.findById(photoId)
-        .populate('comments.user_id', COMMENT_FIELDS)
-        .lean();
-}
 
 async function validateImageBuffer(file) {
     if (!file?.buffer) {
@@ -218,24 +159,13 @@ export const uploadNewPhoto = asyncHandler(
             return badRequest(res, { error: 'Description too long' });
         }
 
-        const uploaded = await uploadImageBuffer(req.file.buffer, {
-            public_id: undefined,
-        });
-
-        const photo = await Photo.create({
-            imageUrl: uploaded.secure_url,
-            publicId: uploaded.public_id,
-            width: uploaded.width,
-            height: uploaded.height,
-            format: uploaded.format,
-            bytes: uploaded.bytes,
-            date_time: new Date(),
-            user_id: userId,
+        const photo = await createPhotoFromUpload({
+            userId,
+            fileBuffer: req.file.buffer,
             description,
-            comments: [],
         });
 
-        return created(res, shapePhoto(photo));
+        return created(res, toClient(photo));
     },
     { defaultMessage: 'Server error', responseType: 'text' }
 );
@@ -320,18 +250,10 @@ export const replacePhotoImage = asyncHandler(
             return forbidden(res, { error: 'Not allowed to edit this photo' });
         }
 
-        const oldPublicId = photo.publicId;
-        const uploaded = await uploadImageBuffer(req.file.buffer, {
-            public_id: undefined,
+        const { oldPublicId } = await replacePhotoImageService({
+            photo,
+            fileBuffer: req.file.buffer,
         });
-
-        photo.imageUrl = uploaded.secure_url;
-        photo.publicId = uploaded.public_id;
-        photo.width = uploaded.width;
-        photo.height = uploaded.height;
-        photo.format = uploaded.format;
-        photo.bytes = uploaded.bytes;
-        await photo.save();
 
         if (oldPublicId) {
             await deleteImageByPublicId(oldPublicId);

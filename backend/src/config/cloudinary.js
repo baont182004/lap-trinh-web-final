@@ -47,3 +47,7 @@ export async function deleteImageByPublicId(publicId) {
         return null;
     }
 }
+
+export async function uploadPhotoBuffer(buffer, options = {}) {
+    return uploadImageBuffer(buffer, { public_id: undefined, ...options });
+}
