@@ -1,8 +1,6 @@
 import mongoose from 'mongoose';
-import { fileTypeFromBuffer } from 'file-type';
 import Photo from '../models/Photo.js';
 import { deleteImageByPublicId } from '../config/cloudinary.js';
-import { ALLOWED_MIME_TYPES } from '../config/uploads.js';
 import asyncHandler from '../middlewares/asyncHandler.js';
 import { created, ok, badRequest, forbidden, notFound } from '../utils/http.js';
 import { isOwnerOrAdmin } from '../utils/permissions.js';
@@ -12,9 +10,11 @@ import {
     attachReactions,
     COMMENT_FIELDS,
     createPhotoFromUpload,
+    deletePhotoAsset,
     fetchPhotoWithComments,
     replacePhotoImage as replacePhotoImageService,
 } from '../services/photoService.js';
+import { validateImageBuffer } from '../services/uploadService.js';
 
 const FEED_DEFAULT_LIMIT = 12;
 const FEED_MAX_LIMIT = 30;
@@ -36,19 +36,6 @@ function parseCursor(rawCursor) {
 }
 
 
-async function validateImageBuffer(file) {
-    if (!file?.buffer) {
-        return { ok: false, error: 'No file uploaded' };
-    }
-    if (file.mimetype && !ALLOWED_MIME_TYPES.has(file.mimetype)) {
-        return { ok: false, error: 'Only image files are allowed' };
-    }
-    const detected = await fileTypeFromBuffer(file.buffer);
-    if (!detected || !ALLOWED_MIME_TYPES.has(detected.mime)) {
-        return { ok: false, error: 'Unsupported image type' };
-    }
-    return { ok: true };
-}
 
 // GET /photosOfUser/:id
 export const getPhotosOfUser = asyncHandler(
@@ -185,7 +172,7 @@ export const deletePhoto = asyncHandler(
             return forbidden(res, { error: 'Not allowed to delete this photo' });
         }
 
-        const oldPublicId = photo.publicId;
+        const { oldPublicId } = await deletePhotoAsset(photo);
         await Photo.deleteOne({ _id: photoId });
 
         if (oldPublicId) {

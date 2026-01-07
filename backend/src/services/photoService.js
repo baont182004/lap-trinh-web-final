@@ -1,6 +1,8 @@
 import Photo from '../models/Photo.js';
 import Reaction from '../models/Reaction.js';
-import { uploadImageBuffer } from '../config/cloudinary.js';
+import { uploadImageBuffer } from './uploadService.js';
+import fs from 'fs';
+import path from 'path';
 import { toClient } from '../presenters/photoPresenter.js';
 
 export const COMMENT_FIELDS = '_id first_name last_name login_name';
@@ -42,9 +44,7 @@ export async function attachReactions(photos, userId) {
 }
 
 export async function createPhotoFromUpload({ userId, fileBuffer, description }) {
-    const uploaded = await uploadImageBuffer(fileBuffer, {
-        public_id: undefined,
-    });
+    const uploaded = await uploadImageBuffer(fileBuffer);
 
     return Photo.create({
         imageUrl: uploaded.secure_url,
@@ -62,9 +62,7 @@ export async function createPhotoFromUpload({ userId, fileBuffer, description })
 
 export async function replacePhotoImage({ photo, fileBuffer }) {
     const oldPublicId = photo.publicId;
-    const uploaded = await uploadImageBuffer(fileBuffer, {
-        public_id: undefined,
-    });
+    const uploaded = await uploadImageBuffer(fileBuffer);
 
     photo.imageUrl = uploaded.secure_url;
     photo.publicId = uploaded.public_id;
@@ -75,4 +73,15 @@ export async function replacePhotoImage({ photo, fileBuffer }) {
     await photo.save();
 
     return { photo, oldPublicId };
+}
+
+export async function deletePhotoAsset(photo) {
+    if (!photo) return { oldPublicId: null };
+    const oldPublicId = photo.publicId;
+    if (!oldPublicId && photo.file_name && !photo.imageUrl) {
+        const imagesDir = path.join(process.cwd(), 'images');
+        const filePath = path.join(imagesDir, photo.file_name);
+        fs.promises.unlink(filePath).catch(() => { });
+    }
+    return { oldPublicId };
 }
