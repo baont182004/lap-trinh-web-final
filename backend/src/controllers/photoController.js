@@ -14,7 +14,6 @@ import {
     fetchPhotoWithComments,
     replacePhotoImage as replacePhotoImageService,
 } from '../services/photoService.js';
-import { validateImageBuffer } from '../services/uploadService.js';
 
 const FEED_DEFAULT_LIMIT = 12;
 const FEED_MAX_LIMIT = 30;
@@ -132,10 +131,6 @@ export const addComment = asyncHandler(
 // Post /photos/new
 export const uploadNewPhoto = asyncHandler(
     async (req, res) => {
-        const validation = await validateImageBuffer(req.file);
-        if (!validation.ok) {
-            return badRequest(res, { error: validation.error });
-        }
         const userId = req.user?._id;
         if (!userId) return res.sendStatus(401);
 
@@ -224,10 +219,6 @@ export const replacePhotoImage = asyncHandler(
         const photoId = req.params.id;
         if (!isValidObjectId(photoId)) {
             return badRequest(res, { error: 'Invalid photo id' });
-        }
-        const validation = await validateImageBuffer(req.file);
-        if (!validation.ok) {
-            return badRequest(res, { error: validation.error });
         }
 
         const photo = await Photo.findById(photoId);

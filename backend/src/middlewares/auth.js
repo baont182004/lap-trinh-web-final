@@ -7,11 +7,14 @@ export const verifyToken = (req, res, next) => {
         req.headers['authorization']?.split(' ')[1];
 
     if (!token) {
-        return res.status(401).json({ message: "Truy c?p b? t? ch?i: Thi?u token" });
+        return res.status(401).json({ message: "Truy cập bị từ chối: Thiếu token" });
     }
 
     try {
-        const secret = process.env.ACCESS_TOKEN_SECRET || process.env.JWT_SECRET;
+        const secret = process.env.ACCESS_TOKEN_SECRET;
+        if (!secret) {
+            return res.status(500).json({ message: "Missing access token secret" });
+        }
         const decoded = jwt.verify(token, secret);
         req.user = {
             ...decoded,
@@ -20,7 +23,7 @@ export const verifyToken = (req, res, next) => {
         next();
     } catch (err) {
         console.error('verifyToken error:', err);
-        return res.status(401).json({ message: "Truy c?p b? t? ch?i: Token không h?p l?" });
+        return res.status(401).json({ message: "Truy cập bị từ chối: Token không hợp lệ" });
     }
 };
 
@@ -38,6 +41,6 @@ export const verifyAdmin = (req, res, next) => {
             console.error('verifyAdmin error:', err);
         }
 
-        return res.status(403).json({ message: "Yêu c?u quy?n admin ð? truy c?p tài nguyên này" });
+        return res.status(403).json({ message: "Yêu cầu quyền admin để truy cập tài nguyên này" });
     });
 };

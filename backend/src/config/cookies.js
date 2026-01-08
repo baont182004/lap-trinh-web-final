@@ -1,4 +1,5 @@
 const isProduction = process.env.NODE_ENV === 'production';
+const isCrossSite = process.env.CROSS_SITE_COOKIES === 'true';
 
 function parseDurationMs(value, fallbackMs) {
   if (!value) return fallbackMs;
@@ -31,8 +32,8 @@ const refreshMaxAgeMs = parseDurationMs(
 export function getAccessCookieOptions() {
   return {
     httpOnly: true,
-    secure: isProduction,
-    sameSite: 'lax',
+    secure: isCrossSite || isProduction,
+    sameSite: isCrossSite ? 'none' : 'lax',
     path: '/',
     maxAge: accessMaxAgeMs,
   };
@@ -41,9 +42,18 @@ export function getAccessCookieOptions() {
 export function getRefreshCookieOptions() {
   return {
     httpOnly: true,
-    secure: isProduction,
-    sameSite: 'lax',
+    secure: isCrossSite || isProduction,
+    sameSite: isCrossSite ? 'none' : 'lax',
     path: '/api/auth/refresh',
     maxAge: refreshMaxAgeMs,
+  };
+}
+
+export function getCsrfCookieOptions() {
+  return {
+    httpOnly: false,
+    secure: isCrossSite || isProduction,
+    sameSite: isCrossSite ? 'none' : 'lax',
+    path: '/',
   };
 }
